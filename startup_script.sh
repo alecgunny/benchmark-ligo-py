@@ -1,15 +1,9 @@
 #! /bin/bash -e
 
 apt-get update
-apt-get install -y wget git
-
-wget -O ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-bash ~/miniconda.sh -b -p $HOME/miniconda
-
-export PATH="$HOME/miniconda/bin:$PATH"
-conda init
-conda update -n base conda
+apt-get install -y git python3-pip
+pip3 install --upgrade pip
 
 git clone https://github.com/alecgunny/benchmark-ligo-py
 cd benchmark-ligo-py
-conda env create -f environment.yaml
+python3 -m pip install -r requirements.txt

@@ -1,6 +1,10 @@
 --extra-index-url "https://pypi.ngc.nvidia.com"
 tritonclient[all]
 
+numpy
+pandas
+tblib
+attrs
 google-cloud-storage
 google-cloud-container
 kubernetes
