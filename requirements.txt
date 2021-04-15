@@ -1,0 +1,8 @@
+--extra-index-url "https://pypi.ngc.nvidia.com"
+tritonclient[all]
+
+google-cloud-storage
+google-cloud-container
+kubernetes
+
+git+https://github.com/alecgunny/stillwater@multistream

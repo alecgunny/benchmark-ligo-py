@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triton-server-monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: triton-server-monitor
+  template:
+    metadata:
+      labels:
+        app: triton-server-monitor
+    spec:
+      containers:
+      - name: triton-server-monitor
+        image: alecgunny/triton-server-monitor
+        command:
+        - /bin/bash
+        args:
+        - -c
+        - flask run --host=0.0.0.0
+        ports:
+        - containerPort: 5000
+      nodeSelector:
+        triton-server-monitor: "true"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: triton-server-monitor
+  namespace: default
+spec:
+  ports:
+  - name: http-flask
+    port: 5000
+    protocol: TCP
+  selector:
+    app: triton-server-monitor
+  sessionAffinity: None
+  type: LoadBalancer
