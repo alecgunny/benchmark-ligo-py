@@ -1,7 +1,7 @@
 #! /bin/bash -e
 
 apt-get update
-apt-get install wget git
+apt-get install -y wget git
 
 wget -O ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 bash ~/miniconda.sh -b -p $HOME/miniconda
