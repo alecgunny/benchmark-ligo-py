@@ -10,6 +10,6 @@ export PATH="$HOME/miniconda/bin:$PATH"
 conda init
 conda update -n base conda
 
-git clone <insert-repo-here>
-cd <repo-name>
+git clone https://github.com/alecgunny/benchmark-ligo-py
+cd benchmark-ligo-py
 conda create -f environment.yaml
