@@ -12,4 +12,4 @@ conda update -n base conda
 
 git clone https://github.com/alecgunny/benchmark-ligo-py
 cd benchmark-ligo-py
-conda create -f environment.yaml
+conda env create -f environment.yaml
