@@ -1,6 +1,7 @@
 import os
 import re
 import requests
+import time
 import typing
 import yaml
 from base64 import b64decode
@@ -98,6 +99,9 @@ class K8sApiClient:
     def wait_for_deployment(self, name: str, namespace: str = "default"):
         app_client = kubernetes.client.AppsV1Api(self._client)
 
+        _start_time = time.time()
+        _grace_period_seconds = 10
+
         def _ready_callback():
             try:
                 response = app_client.read_namespaced_deployment_status(
@@ -116,7 +120,8 @@ class K8sApiClient:
                 if statuses["Available"]:
                     return True
             except KeyError:
-                raise ValueError("Couldn't find readiness status")
+                if (time.time() - _start_time) > _grace_period_seconds:
+                    raise ValueError("Couldn't find readiness status")
 
             try:
                 if not statuses["Progressing"]:
