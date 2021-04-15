@@ -1,3 +1,4 @@
+import argparse
 import io
 import os
 import requests
@@ -9,10 +10,6 @@ import numpy as np
 import cloud_utils as cloud
 from expt_configs import expts
 from expts.offline import run_experiment
-
-
-def format_for_expt(d, expt):
-    return {k.format(expt.kernel_stride): v for k, v in d.items()}
 
 
 def deploy_gpu_drivers(cluster):
@@ -168,8 +165,8 @@ def run_inference_experiments(
 def main(
     project: str,
     cluster_name: str,
-    bucket: typing.Optional[str] = None,
     zone: str = "us-west1-b",
+    bucket: typing.Optional[str] = None,
     keep: bool = False
 ):
     manager = cloud.GKEClusterManager(project, zone)
@@ -192,7 +189,6 @@ def main(
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--project",
@@ -203,6 +199,11 @@ if __name__ == "__main__":
         "--cluster-name",
         type=str,
         default="gw-benchmarking"
+    )
+    parser.add_argument(
+        "--zone",
+        type=str,
+        default="us-west1-b"
     )
     parser.add_argument(
         "--bucket",
