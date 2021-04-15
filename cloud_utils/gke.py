@@ -4,6 +4,7 @@ import typing
 from contextlib import contextmanager
 from functools import partial
 
+import attr
 from google.auth.transport.requests import Request as AuthRequest
 from google.oauth2 import service_account
 from google.cloud import container_v1 as container
@@ -42,8 +43,27 @@ class ThrottledClient:
         return request_fn(request=request, **kwargs)
 
 
+@attr(auto_attribs=True)
 class Resource:
-    def __new__(cls, resource, *args, **kwargs):
+    _name: str
+    parent: "Resource"
+
+    @property
+    def client(self):
+        return self.parent.client
+
+    @property
+    def resource_type(self):
+        return type(self).__name__
+
+    @property
+    def name(self):
+        resource_type = self.resource_type
+        camel = resource_type[0].lower() + resource_type[1:]
+        return self.parent.name + "/{}/{}".format(camel, self._name)
+
+    @classmethod
+    def create(cls, resource, parent):
         resource_type = type(resource).__name__
         if resource_type == "Cluster":
             cls = Cluster
@@ -51,42 +71,27 @@ class Resource:
             cls = NodePool
         else:
             raise TypeError(f"Unknown GKE resource type {resource_type}")
-        return object.__new__(cls)
 
-    def __init__(self, resource, parent, **kwargs):
-        self.resource = resource
-        self.parent = parent.name
-        self.client = parent.client
-
-    @property
-    def resource_type(self):
-        return type(self.resource).__name__
-
-    @property
-    def name(self):
-        resource_type = self.resource_type
-        camel = resource_type[0].lower() + resource_type[1:]
-        return self.parent + "/{}/{}".format(camel, self.resource.name)
-
-    def create(self):
+        obj = cls(resource.name, parent)
         create_request_cls = getattr(
-            container, f"Create{self.resource_type}Request"
+            container, f"Create{obj.resource_type}Request"
         )
 
-        resource_type = snakeify(self.resource_type)
+        resource_type = snakeify(obj.resource_type)
         kwargs = {
-            resource_type: self.resource,
-            "parent": self.parent
+            resource_type: resource,
+            "parent": parent.name
         }
         create_request = create_request_cls(**kwargs)
         try:
-            return self.client.make_request(create_request)
+            obj.client.make_request(create_request)
         except Exception as e:
             try:
                 if e.code != 409:
                     raise
             except AttributeError:
                 raise e
+        return obj
 
     def delete(self):
         delete_request_cls = getattr(
@@ -125,11 +130,14 @@ class Cluster(Resource):
             self._make_k8s_client()
         return self._k8s_client
 
-    def create(self):
-        response = super().create()
-        if response is not None:
-            self._make_k8s_client()
-        return response
+    @classmethod
+    def create(cls, resource, parent):
+        obj = super().create(resource, parent)
+        try:
+            obj._make_k8s_client()
+        except ValueError:
+            pass
+        return obj
 
     def deploy(self, file: str):
         return self.k8s_client.create_from_yaml(file)
@@ -220,8 +228,7 @@ class GKEClusterManager:
     @contextmanager
     def manage_resource(self, resource, parent=None, keep=False):
         parent = parent or self
-        resource = Resource(resource, parent)
-        resource.create()
+        resource = Resource.create(resource, parent)
 
         resource_type = snakeify(resource.resource_type).replace("_", " ")
         resource_msg = resource_type + " " + resource.name
