@@ -8,7 +8,7 @@ import numpy as np
 
 import cloud_utils as cloud
 from expt_configs import expts
-from expts.offline import main as run_experiment
+from expts.offline import run_experiment
 
 
 def format_for_expt(d, expt):
@@ -131,6 +131,7 @@ def run_inference_experiments(
                     url=server_url,
                     model_name=model_name,
                     model_version=1,
+                    num_clients=1,
                     sequence_id=1001,
                     generation_rate=generation_rate,
                     num_iterations=50000,
@@ -167,14 +168,12 @@ def run_inference_experiments(
 def main(
     project: str,
     cluster_name: str,
-    repo_dir: str = "repo",
-    repo_bucket: typing.Optional[str] = None,
+    bucket: typing.Optional[str] = None,
     zone: str = "us-west1-b",
-    export: bool = False,
     keep: bool = False
 ):
     manager = cloud.GKEClusterManager(project, zone)
-    repo = cloud.GCSModelRepo(repo_bucket or cluster_name + "_model-repo")
+    repo = cloud.GCSModelRepo(bucket or cluster_name + "_model-repo")
 
     cluster = cloud.container.Cluster(
         name=cluster_name,
@@ -204,6 +203,11 @@ if __name__ == "__main__":
         "--cluster-name",
         type=str,
         default="gw-benchmarking"
+    )
+    parser.add_argument(
+        "--bucket",
+        type=str,
+        default=None
     )
     parser.add_argument(
         "--keep",
