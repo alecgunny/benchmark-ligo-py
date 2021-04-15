@@ -44,7 +44,7 @@ def run_inference_experiments(
         )
     )
 
-    with manager.manage_resources(
+    with manager.manage_resource(
         server_monitor_node_pool, cluster, keep=True
     ) as server_monitor_node_pool:
         pass
@@ -123,7 +123,7 @@ def run_inference_experiments(
                 server_url = f"{ip}:8001"
                 model_name = f"kernel-stride-{expt.kernel_stride:0.4f}_gwe2e"
                 requests.get(
-                    f"{monitor_ip}:5000/start",
+                    f"http://{monitor_ip}:5000/start",
                     params={"url": server_url, "model-name": model_name}
                 )
 
@@ -137,7 +137,7 @@ def run_inference_experiments(
                     warm_up=10,
                     filename=io.StringIO()
                 )
-                response = requests.get(f"{monitor_ip}:5000/stop")
+                response = requests.get(f"http://{monitor_ip}:5000/stop")
 
                 client_df = pd.read_csv(client_stream.getvalue())
                 server_df = pd.read_csv(io.BytesIO(response.content))

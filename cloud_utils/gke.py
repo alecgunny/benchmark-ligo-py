@@ -43,7 +43,7 @@ class ThrottledClient:
         return request_fn(request=request, **kwargs)
 
 
-@attr(auto_attribs=True)
+@attr.s(auto_attribs=True)
 class Resource:
     _name: str
     parent: "Resource"
