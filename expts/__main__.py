@@ -133,7 +133,7 @@ def run_inference_experiments(
 
             server_url = f"{ip}:8001"
             str_kernel_size = f"{expt.kernel_stride:0.4f}".strip("0")
-            model_name = f"kernel-stride=0{str_kernel_size}_gwe2e"
+            model_name = f"kernel-stride-0{str_kernel_size}_gwe2e"
 
             generation_rate = 800
             last_client_df, last_server_df = None, None
