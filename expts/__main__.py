@@ -114,15 +114,18 @@ def run_inference_experiments(
                 current_instances = expt.instances
                 current_gpus = expt.gpus
 
+            server_url = f"{ip}:8001"
+            str_kernel_size = f"{expt.kernel_stride:0.4f}".strip("0")
+            model_name = f"kernel-stride=0{str_kernel_size}_gwe2e"
+
             generation_rate = 800
             last_client_df, last_server_df = None, None
             while True:
-                server_url = f"{ip}:8001"
-                model_name = f"kernel-stride-{expt.kernel_stride:0.4f}_gwe2e"
-                requests.get(
+                response = requests.get(
                     f"http://{monitor_ip}:5000/start",
                     params={"url": server_url, "model-name": model_name}
                 )
+                response.raise_for_status()
 
                 client_stream = run_experiment(
                     url=server_url,
@@ -136,6 +139,7 @@ def run_inference_experiments(
                     filename=io.StringIO()
                 )
                 response = requests.get(f"http://{monitor_ip}:5000/stop")
+                response.raise_for_status()
 
                 client_df = pd.read_csv(client_stream.getvalue())
                 server_df = pd.read_csv(io.BytesIO(response.content))
