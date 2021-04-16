@@ -41,7 +41,7 @@ class K8sApiClient:
         # GCP code lifted from
         # https://cloud.google.com/compute/docs/access/
         # create-enable-service-accounts-for-instances#applications
-        if cluster.parent.credentials is None:
+        if cluster.client.credentials is None:
             METADATA_URL = "http://metadata.google.internal/computeMetadata/v1"
             METADATA_HEADERS = {"Metadata-Flavor": "Google"}
             SERVICE_ACCOUNT = "default"

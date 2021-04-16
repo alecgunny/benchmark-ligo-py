@@ -28,9 +28,20 @@ def snakeify(name: str) -> str:
 
 class ThrottledClient:
     def __init__(self, credentials=None, throttle_secs=1.0):
-        self._client = container.ClusterManagerClient(credentials=credentials)
+        self.credentials = credentials
+        self._client = container.ClusterManagerClient(
+            credentials=self.credentials
+        )
         self.throttle_secs = throttle_secs
         self._last_request_time = time.time()
+
+    @property
+    def client(self):
+        return self
+
+    @property
+    def name(self):
+        return ""
 
     def make_request(self, request, **kwargs):
         request_fn_name = snakeify(
@@ -176,67 +187,68 @@ class NodePool(Resource):
     pass
 
 
-class Cluster(Resource):
-    def __init__(self, resource, parent):
-        super().__init__(resource, parent)
-        self._k8s_client = None
-
-    def _make_k8s_client(self):
-        if self._k8s_client is not None:
-            raise ValueError(
-                f"Already created kubernetes client for cluster {self.name}"
-            )
-        self._k8s_client = K8sApiClient(self)
+class ManagerResource(Resource):
+    def __attrs_post_init__(self):
+        self._resources = {}
+        # TODO: include automatic resource detection here
 
     @property
-    def k8s_client(self):
-        if self._k8s_client is None:
-            self._make_k8s_client()
-        return self._k8s_client
+    def managed_resource_type(self):
+        raise NotImplementedError
 
-    @classmethod
-    def create(cls, resource, parent):
-        obj = super().create(resource, parent)
-        try:
-            obj._make_k8s_client()
-        except ValueError:
-            pass
-        return obj
+    @property
+    def resources(self):
+        resources = self._resources.copy()
+        for resource_name, resource in self._resources.items():
+            try:
+                subresources = resource.resources
+            except AttributeError:
+                continue
+            for subname, subresource in subresources.items():
+                resources[subname] = subresource
+        return resources
 
-    def deploy(self, file: str):
-        return self.k8s_client.create_from_yaml(file)
-
-    def remove_deployment(self, name: str, namespace: str = "default"):
-        return self.k8s_client.remove_deployment(name, namespace)
-
-
-class GKEClusterManager:
-    def __init__(
-        self,
-        project: str,
-        zone: str,
-        credentials: typing.Optional[service_account.Credentials] = None
-    ):
-        self.credentials = credentials
-        self.client = ThrottledClient(self.credentials)
-
-        self.name = f"projects/{project}/locations/{zone}"
-        self.resources = {}
-
-    @contextmanager
-    def manage_resource(self, resource, parent=None, keep=False):
-        parent = parent or self
-        resource = Resource.create(resource, parent)
-
+    def _make_resource_message(resource):
         resource_type = snakeify(resource.resource_type).replace("_", " ")
-        resource_msg = resource_type + " " + resource.name
+        return resource_type + " " + resource.name
+
+    def create_resource(self, resource):
+        if type(resource).__name__ != self.managed_resource_type.__name__:
+            raise TypeError("{} cannot manage resource {}".format(
+                type(self).__name__, type(resource).__name__
+            ))
+
+        resource = Resource.create(resource, self)
+        resource_msg = self._make_resource_message(resource)
 
         wait_for(
             resource.is_ready,
             f"Waiting for {resource_msg} to become ready",
             f"{resource_msg} ready"
         )
-        self.resources[resource.name] = resource
+        self._resources[resource.name] = resource
+        return resource
+
+    def delete_resource(self, resource):
+        resource_msg = self._make_resource_message(resource)
+
+        wait_for(
+            resource.submit_delete,
+            f"Waiting for {resource_msg} to become available to delete",
+            f"{resource_msg} delete request submitted"
+        )
+
+        wait_for(
+            resource.is_deleted,
+            f"Waiting for {resource_msg} to delete",
+            f"{resource_msg} deleted"
+        )
+        self._resources.pop(resource.name)
+
+    @contextmanager
+    def manage_resource(self, resource, keep=False):
+        resource = self.create_resource(resource)
+        resource_msg = self._make_resource_message(resource)
 
         try:
             yield resource
@@ -245,21 +257,48 @@ class GKEClusterManager:
                 print(f"Encountered error, removing {resource_msg}")
             raise
         finally:
-            if keep:
-                return
+            if not keep:
+                self.delete_resource(resource)
 
-            wait_for(
-                resource.submit_delete,
-                f"Waiting for {resource_msg} to become available to delete",
-                f"{resource_msg} delete request submitted"
-            )
 
-            wait_for(
-                resource.is_deleted,
-                f"Waiting for {resource_type} {resource.name} to delete",
-                f"{resource_type} {resource.name} deleted"
-            )
-            self.resources.pop(resource.name)
+class Cluster(ManagerResource):
+    def __attrs_post_init__(self):
+        self._k8s_client = K8sApiClient(self)
+        super().__attrs_post_init__()
+
+    @property
+    def managed_resource_type(self):
+        return NodePool
+
+    @property
+    def k8s_client(self):
+        return self._k8s_client
+
+    def deploy(self, file: str):
+        return self.k8s_client.create_from_yaml(file)
+
+    def remove_deployment(self, name: str, namespace: str = "default"):
+        return self.k8s_client.remove_deployment(name, namespace)
+
+
+class GKEClusterManager(ManagerResource):
+    def __init__(
+        self,
+        project: str,
+        zone: str,
+        credentials: typing.Optional[service_account.Credentials] = None
+    ):
+        parent = ThrottledClient(credentials)
+        name = f"projects/{project}/locations/{zone}"
+        super().__init__(name, parent)
+
+    @property
+    def managed_resource_type(self):
+        return Cluster
+
+    @property
+    def name(self):
+        return self._name
 
 
 def t4_node_config(vcpus=8, gpus=1, **kwargs):
