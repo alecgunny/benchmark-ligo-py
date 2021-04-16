@@ -2,7 +2,6 @@ import re
 import time
 import typing
 from contextlib import contextmanager
-from functools import partial
 
 import attr
 from google.auth.transport.requests import Request as AuthRequest
@@ -107,6 +106,71 @@ class Resource:
         get_request = get_request_cls(name=self.name)
         return self.client.make_request(get_request, timeout=timeout)
 
+    # TODO: start catching the specific HTTPException
+    # subclass. Is it just the one from werkzeug?
+    def is_ready(self):
+        try:
+            status = self.get(timeout=5).status
+        except Exception:
+            # TODO: something to catch here?
+            raise
+        if status == 2:
+            return True
+        elif status > 2:
+            raise RuntimeError
+        return False
+
+    def submit_delete(self):
+        # first try to submit the delete request,
+        # possibly waiting for the resource to
+        # become available to be deleted if we
+        # need to
+        try:
+            self.delete()
+        except Exception as e:
+            try:
+                if e.code == 404:
+                    # resource is gone, we're good
+                    return True
+                elif e.code != 400:
+                    # 400 means resource is tied up, so
+                    # wait and try again in a bit. Otherwise,
+                    # raise an error
+                    raise
+                else:
+                    return False
+            except AttributeError:
+                # the exception didn't have a `.code`
+                # attribute, so evidently something
+                # else went wrong, raise it
+                raise e
+        else:
+            # response went off ok, so we're good
+            return True
+
+    def is_deleted(self):
+        # now wait for the delete request to
+        # be completed
+        try:
+            status = self.get(timeout=5).status
+        except Exception as e:
+            try:
+                if e.code == 404:
+                    # resource is gone, so we're good
+                    # to exit
+                    return True
+                # some other error occured, raise it
+                raise
+            except AttributeError:
+                # a non-HTTP error occurred, raise it
+                raise e
+
+        if status > 4:
+            # something bad happened to the resource,
+            # raise the issue
+            raise RuntimeError(status)
+        return False
+
 
 class NodePool(Resource):
     pass
@@ -146,72 +210,6 @@ class Cluster(Resource):
         return self.k8s_client.remove_deployment(name, namespace)
 
 
-def resource_ready_callback(resource):
-    try:
-        status = resource.get(timeout=5).status
-    except Exception:
-        # TODO: something to catch here?
-        raise
-    if status == 2:
-        return True
-    elif status > 2:
-        raise RuntimeError
-    return False
-
-
-def resource_delete_submit_callback(resource):
-    # first try to submit the delete request,
-    # possibly waiting for the resource to
-    # become available to be deleted if we
-    # need to
-    try:
-        resource.delete()
-    except Exception as e:
-        try:
-            if e.code == 404:
-                # resource is gone, we're good
-                return True
-            elif e.code != 400:
-                # 400 means resource is tied up, so
-                # wait and try again in a bit. Otherwise,
-                # raise an error
-                raise
-            else:
-                return False
-        except AttributeError:
-            # the exception didn't have a `.code`
-            # attribute, so evidently something
-            # else went wrong, raise it
-            raise e
-    else:
-        # response went off ok, so we're good
-        return True
-
-
-def resource_delete_done_callback(resource):
-    # now wait for the delete request to
-    # be completed
-    try:
-        status = resource.get(timeout=5).status
-    except Exception as e:
-        try:
-            if e.code == 404:
-                # resource is gone, so we're good
-                # to exit
-                return True
-            # some other error occured, raise it
-            raise
-        except AttributeError:
-            # a non-HTTP error occurred, raise it
-            raise e
-
-    if status > 4:
-        # something bad happened to the resource,
-        # raise the issue
-        raise RuntimeError(status)
-    return False
-
-
 class GKEClusterManager:
     def __init__(
         self,
@@ -234,7 +232,7 @@ class GKEClusterManager:
         resource_msg = resource_type + " " + resource.name
 
         wait_for(
-            partial(resource_ready_callback, resource),
+            resource.is_ready,
             f"Waiting for {resource_msg} to become ready",
             f"{resource_msg} ready"
         )
@@ -246,13 +244,13 @@ class GKEClusterManager:
                 print(f"Encountered error, removing {resource_msg}")
 
             wait_for(
-                partial(resource_delete_submit_callback, resource),
+                resource.submit_delete,
                 f"Waiting for {resource_msg} to become available to delete",
                 f"{resource_msg} delete request submitted"
             )
 
             wait_for(
-                partial(resource_delete_done_callback, resource),
+                resource.is_deleted,
                 f"Waiting for {resource_type} {resource.name} to delete",
                 f"{resource_type} {resource.name} deleted"
             )
