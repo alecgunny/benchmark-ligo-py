@@ -187,10 +187,29 @@ class NodePool(Resource):
     pass
 
 
+@attr.s
 class ManagerResource(Resource):
     def __attrs_post_init__(self):
         self._resources = {}
-        # TODO: include automatic resource detection here
+        list_request_cls = getattr(
+            container,
+            f"List{self.managed_resource_type.__name__}sRequest"
+        )
+        list_resource_request = list_request_cls(parent=self.name)
+
+        list_resource_fn = getattr(
+            self.client._client,
+            "list_{}s".format(snakeify(self.managed_resource_type.__name__))
+        )
+        response = list_resource_fn(list_resource_request)
+        resources = getattr(
+            response,
+            snakeify(self.managed_resource_type.__name__) + "s"
+        )
+        for resource in resources:
+            self._resources[resource.name] = self.managed_resource_type(
+                resource.name, self
+            )
 
     @property
     def managed_resource_type(self):
@@ -208,7 +227,7 @@ class ManagerResource(Resource):
                 resources[subname] = subresource
         return resources
 
-    def _make_resource_message(resource):
+    def _make_resource_message(self, resource):
         resource_type = snakeify(resource.resource_type).replace("_", " ")
         return resource_type + " " + resource.name
 
@@ -261,6 +280,7 @@ class ManagerResource(Resource):
                 self.delete_resource(resource)
 
 
+@attr.s
 class Cluster(ManagerResource):
     def __attrs_post_init__(self):
         self._k8s_client = K8sApiClient(self)

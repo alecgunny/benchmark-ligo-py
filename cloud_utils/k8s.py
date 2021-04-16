@@ -56,7 +56,7 @@ class K8sApiClient:
             # Extract the access token from the response.
             access_token = r.json()["access_token"]
         else:
-            access_token = cluster.parent.credentials.token
+            access_token = cluster.client.credentials.token
 
         configuration.api_key["authorization"] = access_token
 
