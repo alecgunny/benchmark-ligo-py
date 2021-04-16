@@ -236,12 +236,17 @@ class GKEClusterManager:
             f"Waiting for {resource_msg} to become ready",
             f"{resource_msg} ready"
         )
+        self.resources[resource.name] = resource
 
-        def delete_resource(raised):
+        try:
+            yield resource
+        except Exception:
+            if not keep:
+                print(f"Encountered error, removing {resource_msg}")
+            raise
+        finally:
             if keep:
                 return
-            elif raised:
-                print(f"Encountered error, removing {resource_msg}")
 
             wait_for(
                 resource.submit_delete,
@@ -255,16 +260,6 @@ class GKEClusterManager:
                 f"{resource_type} {resource.name} deleted"
             )
             self.resources.pop(resource.name)
-
-        self.resources[resource.name] = resource
-        raised = False
-        try:
-            yield resource
-        except Exception:
-            raised = True
-            raise
-        finally:
-            delete_resource(raised)
 
 
 def t4_node_config(vcpus=8, gpus=1, **kwargs):
