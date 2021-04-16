@@ -3,6 +3,7 @@ import io
 import os
 import requests
 import typing
+from contextlib import contextmanager
 
 import pandas as pd
 import numpy as np
@@ -51,17 +52,24 @@ class ServerMonitor:
             "triton-server-monitor"
         )
 
-    def tick(self, url, model_name):
+    @contextmanager
+    def monitor(self, url, model_name):
         response = requests.get(
             f"http://{self.ip}:5000/start",
             params={"url": url, "model-name": model_name}
         )
         response.raise_for_status()
 
-    def tock(self):
-        response = requests.get(f"http://{self.ip}:5000/stop")
-        response.raise_for_status()
-        return pd.read_csv(io.BytesIO(response.content))
+        df = pd.DataFrame()
+        try:
+            yield df
+        finally:
+            response = requests.get(f"http://{self.ip}:5000/stop")
+            response.raise_for_status()
+
+        _df = pd.read_csv(io.BytesIO(response.content))
+        for column in _df.columns:
+            df[column] = df[column]
 
 
 def run_inference_experiments(
@@ -138,19 +146,18 @@ def run_inference_experiments(
             generation_rate = 800
             last_client_df, last_server_df = None, None
             while True:
-                server_monitor.tick(server_url, model_name)
-                client_stream = run_experiment(
-                    url=server_url,
-                    model_name=model_name,
-                    model_version=1,
-                    num_clients=1,
-                    sequence_id=1001,
-                    generation_rate=generation_rate,
-                    num_iterations=50000,
-                    warm_up=10,
-                    filename=io.StringIO()
-                )
-                server_df = server_monitor.tock()
+                with server_monitor.monitor(server_url, model_name) as server_df:
+                    client_stream = run_experiment(
+                        url=server_url,
+                        model_name=model_name,
+                        model_version=1,
+                        num_clients=1,
+                        sequence_id=1001,
+                        generation_rate=generation_rate,
+                        num_iterations=50000,
+                        warm_up=10,
+                        filename=io.StringIO()
+                    )
                 client_df = pd.read_csv(client_stream.getvalue())
 
                 latency = client_df.request_return - client_df.message_start
