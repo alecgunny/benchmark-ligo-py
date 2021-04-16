@@ -23,6 +23,47 @@ def deploy_gpu_drivers(cluster):
         cluster.deploy(f)
 
 
+class ServerMonitor:
+    def __init__(self, cluster):
+        server_monitor_node_pool = cloud.container.NodePool(
+            name="server-monitor-pool",
+            initial_node_count=1,
+            config=cloud.gke.container.NodeConfig(
+                machine_type="n1-standard-4",
+                oauth_scopes=cloud.gke.OAUTH_SCOPES,
+                labels={"triton-server-monitor": "true"}
+            )
+        )
+
+        with cluster.manage_resource(
+            server_monitor_node_pool, keep=True
+        ) as server_monitor_node_pool:
+            pass
+
+        with cloud.deploy_file(
+            os.path.join("apps", "triton-server-monitor.yaml"),
+            ignore_if_exists=True
+        ) as f:
+            cluster.deploy(f)
+        cluster.k8s_client.wait_for_deployment("triton-server-monitor")
+
+        self.ip = cluster.k8s_client.wait_for_service(
+            "triton-server-monitor"
+        )
+
+    def tick(self, url, model_name):
+        response = requests.get(
+            f"http://{self.ip}:5000/start",
+            params={"url": url, "model-name": model_name}
+        )
+        response.raise_for_status()
+
+    def tock(self):
+        response = requests.get(f"http://{self.ip}:5000/stop")
+        response.raise_for_status()
+        return pd.read_csv(io.BytesIO(response.content))
+
+
 def run_inference_experiments(
     cluster: cloud.gke.Cluster,
     repo: cloud.GCSModelRepo,
@@ -30,30 +71,7 @@ def run_inference_experiments(
     keep: bool = False,
     experiment_interval: float = 40.0,
 ):
-    server_monitor_node_pool = cloud.container.NodePool(
-        name="server-monitor-pool",
-        initial_node_count=1,
-        config=cloud.gke.container.NodeConfig(
-            machine_type="n1-standard-4",
-            oauth_scopes=cloud.gke.OAUTH_SCOPES,
-            labels={"triton-server-monitor": "true"}
-        )
-    )
-
-    with cluster.manage_resource(
-        server_monitor_node_pool, cluster, keep=True
-    ) as server_monitor_node_pool:
-        pass
-
-    with cloud.deploy_file(
-        os.path.join("apps", "triton-server-monitor.yaml"),
-        ignore_if_exists=True
-    ) as f:
-        cluster.deploy(f)
-    cluster.k8s_client.wait_for_deployment("triton-server-monitor")
-    monitor_ip = cluster.k8s_client.wait_for_service(
-        "triton-server-monitor"
-    )
+    server_monitor = ServerMonitor(cluster)
 
     # configure the server node pool
     max_cpus = 4 * vcpus_per_gpu
@@ -64,7 +82,7 @@ def run_inference_experiments(
     )
 
     # spin up the node pool on the cluster
-    with cluster.manage_resource(node_pool, cluster, keep=keep) as node_pool:
+    with cluster.manage_resource(node_pool, keep=keep) as node_pool:
         # make sure NVIDIA drivers got installed
         deploy_gpu_drivers(cluster)
         cluster.k8s_client.wait_for_daemon_set(name="nvidia-driver-installer")
@@ -120,12 +138,7 @@ def run_inference_experiments(
             generation_rate = 800
             last_client_df, last_server_df = None, None
             while True:
-                response = requests.get(
-                    f"http://{monitor_ip}:5000/start",
-                    params={"url": server_url, "model-name": model_name}
-                )
-                response.raise_for_status()
-
+                server_monitor.tick(server_url, model_name)
                 client_stream = run_experiment(
                     url=server_url,
                     model_name=model_name,
@@ -137,11 +150,8 @@ def run_inference_experiments(
                     warm_up=10,
                     filename=io.StringIO()
                 )
-                response = requests.get(f"http://{monitor_ip}:5000/stop")
-                response.raise_for_status()
-
+                server_df = server_monitor.tock()
                 client_df = pd.read_csv(client_stream.getvalue())
-                server_df = pd.read_csv(io.BytesIO(response.content))
 
                 latency = client_df.request_return - client_df.message_start
                 if np.percentile(latency, 99) < 0.1:
