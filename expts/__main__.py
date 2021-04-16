@@ -24,7 +24,6 @@ def deploy_gpu_drivers(cluster):
 
 
 def run_inference_experiments(
-    manager: cloud.GKEClusterManager,
     cluster: cloud.gke.Cluster,
     repo: cloud.GCSModelRepo,
     vcpus_per_gpu: int = 16,
@@ -41,7 +40,7 @@ def run_inference_experiments(
         )
     )
 
-    with manager.manage_resource(
+    with cluster.manage_resource(
         server_monitor_node_pool, cluster, keep=True
     ) as server_monitor_node_pool:
         pass
@@ -65,7 +64,7 @@ def run_inference_experiments(
     )
 
     # spin up the node pool on the cluster
-    with manager.manage_resource(node_pool, cluster, keep=keep) as node_pool:
+    with cluster.manage_resource(node_pool, cluster, keep=keep) as node_pool:
         # make sure NVIDIA drivers got installed
         deploy_gpu_drivers(cluster)
         cluster.k8s_client.wait_for_daemon_set(name="nvidia-driver-installer")
@@ -186,9 +185,7 @@ def main(
     )
 
     with manager.manage_resource(cluster, keep=keep) as cluster:
-        run_inference_experiments(
-            manager, cluster, repo, vcpus_per_gpu=16, keep=True
-        )
+        run_inference_experiments(cluster, repo, vcpus_per_gpu=16, keep=keep)
     return manager
 
 
