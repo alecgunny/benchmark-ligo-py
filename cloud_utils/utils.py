@@ -55,7 +55,7 @@ def wait_for(
         value = check_q()
 
     exit_msg = exit_msg or ""
-    exit_msg += " " * (len(exit_msg) - exit_pad)
+    exit_msg += " " * (exit_pad - len(exit_msg))
     print(exit_msg)
 
     return value

@@ -155,6 +155,7 @@ def run_expt(expt, server_ip, server_monitor):
                 logging.warning(str(e))
                 logging.warning("Retrying")
 
+        client_stream.seek(0)
         client_df = pd.read_csv(client_stream)
 
         latency = client_df.request_return - client_df.message_start
@@ -241,7 +242,7 @@ def run_inference_experiments(
                         expt, cluster, repo, vcpus_per_gpu
                     )
 
-                dfs = run_experiment(expt, server_ip, server_monitor)
+                dfs = run_expt(expt, server_ip, server_monitor)
                 for result, df in zip(results, dfs):
                     df["kernel_stride"] = expt.kernel_stride
                     df["instances"] = expt.instances
