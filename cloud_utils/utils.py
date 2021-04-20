@@ -39,7 +39,7 @@ def wait_for(
     i, exit_pad = 0, 0
     value = None
     while t.is_alive():
-        check_q()
+        value = check_q()
         if msg is None:
             continue
 
@@ -55,7 +55,7 @@ def wait_for(
         value = check_q()
 
     exit_msg = exit_msg or ""
-    exit_msg += " " * exit_pad
+    exit_msg += " " * (len(exit_msg) - exit_pad)
     print(exit_msg)
 
     return value

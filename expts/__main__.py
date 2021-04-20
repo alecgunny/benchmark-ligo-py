@@ -1,7 +1,9 @@
 import argparse
 import io
+import logging
 import os
 import requests
+import sys
 import typing
 from contextlib import contextmanager
 
@@ -53,10 +55,10 @@ class ServerMonitor:
         )
 
     @contextmanager
-    def monitor(self, url, model_name):
+    def monitor(self, ip, model_name):
         response = requests.get(
             f"http://{self.ip}:5000/start",
-            params={"url": url, "model-name": model_name}
+            params={"ip": ip, "model-name": model_name}
         )
         response.raise_for_status()
 
@@ -69,7 +71,130 @@ class ServerMonitor:
 
         _df = pd.read_csv(io.BytesIO(response.content))
         for column in _df.columns:
-            df[column] = df[column]
+            df[column] = _df[column]
+
+
+def reset_server(
+    expt,
+    cluster,
+    repo,
+    vcpus_per_gpu
+):
+    """
+    since Triton can't dynamically detect changes
+    to the instance group without explicit model
+    control, the simplest thing to do will be to
+    spin up a new server instance each time our
+    configuration changes
+    """
+    # set some values that we'll use to parse the deployment yaml
+    deploy_file = os.path.join("apps", "triton-server.yaml")
+    deploy_values = {
+        "_file": os.path.join("apps", "values.yaml"),
+        "repo": "gs://" + repo.bucket_name,
+    }
+
+    # start by updating all the model configs if
+    # the instances-per-gpu have changed
+    repo.update_model_configs_for_expt(expt)
+
+    # now spin down the old deployment
+    cluster.remove_deployment("tritonserver")
+
+    # now add the new configuration details to our
+    # yaml parsing values map
+    max_cpus = 4 * vcpus_per_gpu
+    num_cpus = min(vcpus_per_gpu * expt.gpus, max_cpus - 1)
+    deploy_values.update({"numGPUs": expt.gpus, "cpu": num_cpus})
+
+    # deploy this new yaml onto the cluster
+    with cloud.deploy_file(
+        deploy_file, values=deploy_values, ignore_if_exists=True
+    ) as f:
+        cluster.deploy(f)
+
+    # wait for it to be ready
+    cluster.k8s_client.wait_for_deployment("tritonserver")
+    ip = cluster.k8s_client.wait_for_service("tritonserver")
+    return ip
+
+
+def run_expt(expt, server_ip, server_monitor):
+    max_exceptions, exceptions_this_expt = 5, 0
+
+    server_url = f"{server_ip}:8001"
+    str_kernel_size = f"{expt.kernel_stride:0.4f}".strip("0")
+    model_name = f"kernel-stride-0{str_kernel_size}_gwe2e"
+
+    generation_rate = 700
+    last_client_df, last_server_df = None, None
+    while True:
+        logging.info(
+            f"Benchmarking server with generation rate {generation_rate}"
+        )
+
+        with server_monitor.monitor(server_ip, model_name) as server_df:
+            try:
+                client_stream = run_experiment(
+                    url=server_url,
+                    model_name=model_name,
+                    model_version=1,
+                    num_clients=1,
+                    sequence_id=1001,
+                    generation_rate=generation_rate,
+                    num_iterations=50000,
+                    warm_up=10,
+                    filename=io.StringIO()
+                )
+            except Exception as e:
+                exceptions_this_expt += 1
+                if exceptions_this_expt == max_exceptions:
+                    logging.error("Exception limited violated")
+                    raise
+                logging.warning("Encountered exception:")
+                logging.warning(str(e))
+                logging.warning("Retrying")
+
+        client_df = pd.read_csv(client_stream)
+
+        latency = client_df.request_return - client_df.message_start
+        if np.percentile(latency, 99) < 0.1:
+            generation_rate += 20
+            last_client_df = client_df
+            last_server_df = server_df
+        else:
+            logging.info(
+                f"Experiment {expt} violated latency constraint "
+                f"at generation rate {generation_rate}"
+            )
+            logging.info(
+                "Latency percentiles: 50={} us, 95={} us".format(
+                    int(np.percentile(latency, 50) * 10**6),
+                    int(np.percentile(latency, 95) * 10**6)
+                )
+            )
+            for model, d in server_df.groupby("model"):
+                if "gwe2e" in model:
+                    continue
+
+                logging.info(
+                    "Model {} queue percentiles: 50={} us, 95={} us".format(
+                        model,
+                        int(np.percentile(d.queue, 50)),
+                        int(np.percentile(d.queue, 95))
+                    )
+                )
+
+            if np.percentile(server_df.queue, 95) < 20000:
+                logging.warning("Queue times stable, retrying")
+            elif last_client_df is None:
+                raise RuntimeError(
+                    f"Expt {expt} failed before recording metrics"
+                )
+            else:
+                break
+
+    return last_client_df, last_server_df, client_df, server_df
 
 
 def run_inference_experiments(
@@ -95,91 +220,37 @@ def run_inference_experiments(
         deploy_gpu_drivers(cluster)
         cluster.k8s_client.wait_for_daemon_set(name="nvidia-driver-installer")
 
-        # set some values that we'll use to parse the deployment yaml
-        deploy_file = os.path.join("apps", "triton-server.yaml")
-        deploy_values = {
-            "_file": os.path.join("apps", "values.yaml"),
-            "repo": "gs://" + repo.bucket_name,
-        }
-
         # iterate through our experiments and collect the results
-        client_results, server_results = [], []
+        results = [[] for _ in range(4)]
+        fnames = [
+            "client-results.csv",
+            "server-results.csv",
+            "unstable-client-results.csv",
+            "unstable-server-results.csv"
+        ]
+
         current_instances, current_gpus = 0, 0
-        for expt in expts:
-            if current_instances != expt.instances or current_gpus != expt.gpus:
-                # since Triton can't dynamically detect changes
-                # to the instance group without explicit model
-                # control, the simplest thing to do will be to
-                # spin up a new server instance each time our
-                # configuration changes
-
-                # start by updating all the model configs if
-                # the instances-per-gpu have changed
-                if current_instances != expt.instances:
-                    repo.update_model_configs_for_expt(expt)
-
-                # now spin down the old deployment
-                cluster.remove_deployment("tritonserver")
-
-                # now add the new configuration details to our
-                # yaml parsing values map
-                num_cpus = min(vcpus_per_gpu * expt.gpus, max_cpus - 1)
-                deploy_values.update({"numGPUs": expt.gpus, "cpu": num_cpus})
-
-                # deploy this new yaml onto the cluster
-                with cloud.deploy_file(
-                    deploy_file, values=deploy_values, ignore_if_exists=True
-                ) as f:
-                    cluster.deploy(f)
-
-                # wait for it to be ready
-                cluster.k8s_client.wait_for_deployment("tritonserver")
-                ip = cluster.k8s_client.wait_for_service("tritonserver")
-
-                current_instances = expt.instances
-                current_gpus = expt.gpus
-
-            server_url = f"{ip}:8001"
-            str_kernel_size = f"{expt.kernel_stride:0.4f}".strip("0")
-            model_name = f"kernel-stride-0{str_kernel_size}_gwe2e"
-
-            generation_rate = 800
-            last_client_df, last_server_df = None, None
-            while True:
-                with server_monitor.monitor(server_url, model_name) as server_df:
-                    client_stream = run_experiment(
-                        url=server_url,
-                        model_name=model_name,
-                        model_version=1,
-                        num_clients=1,
-                        sequence_id=1001,
-                        generation_rate=generation_rate,
-                        num_iterations=50000,
-                        warm_up=10,
-                        filename=io.StringIO()
+        try:
+            for expt in expts:
+                logging.info(f"Running expt {expt}")
+                if (
+                    current_instances != expt.instances or
+                    current_gpus != expt.gpus
+                ):
+                    server_ip = reset_server(
+                        expt, cluster, repo, vcpus_per_gpu
                     )
-                client_df = pd.read_csv(client_stream.getvalue())
 
-                latency = client_df.request_return - client_df.message_start
-                if np.percentile(latency, 99) < 0.1:
-                    generation_rate += 20
-                    last_client_df = client_df
-                    last_server_df = server_df
-                else:
-                    break
-
-            for df in [last_client_df, last_server_df]:
-                df["kernel_stride"] = expt.kernel_stride
-                df["instances"] = expt.instances
-                df["gpus"] = expt.gpus
-            client_results.append(last_client_df)
-            server_results.append(last_server_df)
-
-    client_results = pd.concat(client_results, axis=0, ignore_index=True)
-    client_results.to_csv("client-results.csv", index=False)
-
-    server_results = pd.concat(server_results, axis=0, ignore_index=True)
-    server_results.to_csv("server-results.csv", index=False)
+                dfs = run_experiment(expt, server_ip, server_monitor)
+                for result, df in zip(results, dfs):
+                    df["kernel_stride"] = expt.kernel_stride
+                    df["instances"] = expt.instances
+                    df["gpus"] = expt.gpus
+                    result.append(df)
+        finally:
+            for result, fname in zip(results, fnames):
+                df = pd.concat(result, axis=0, ignore_index=True)
+                df.to_csv(fname, index=False)
 
 
 def main(
@@ -233,4 +304,6 @@ if __name__ == "__main__":
         action="store_true",
     )
     flags = parser.parse_args()
+
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
     manager = main(**vars(flags))
