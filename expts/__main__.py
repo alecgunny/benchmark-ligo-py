@@ -241,6 +241,8 @@ def run_inference_experiments(
                     server_ip = reset_server(
                         expt, cluster, repo, vcpus_per_gpu
                     )
+                    current_instances = expt.instances
+                    current_gpus = expt.gpus
 
                 dfs = run_expt(expt, server_ip, server_monitor)
                 for result, df in zip(results, dfs):
